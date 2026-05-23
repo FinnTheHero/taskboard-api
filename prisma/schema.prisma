@@ -1,0 +1,101 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum NotificationType {
+  EMAIL
+  IN_APP
+}
+
+enum MemberRole {
+  OWNER
+  MEMBER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  ownedBoards   Board[]
+  memberships   TeamMember[]
+  assignedTasks Task[]
+  notifications Notification[]
+}
+
+model Board {
+  id        String   @id @default(cuid())
+  title     String
+  ownerId   String
+  createdAt DateTime @default(now())
+
+  owner   User         @relation(fields: [ownerId], references: [id])
+  members TeamMember[]
+  columns Column[]
+}
+
+model Column {
+  id       String @id @default(cuid())
+  title    String
+  position Int
+  boardId  String
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  tasks Task[]
+}
+
+model Task {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  priority    Priority?
+  deadline    DateTime?
+  columnId    String
+  assigneeId  String?
+  createdAt   DateTime  @default(now())
+
+  column        Column         @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  assignee      User?          @relation(fields: [assigneeId], references: [id])
+  notifications Notification[]
+}
+
+model TeamMember {
+  boardId String
+  userId  String
+  role    MemberRole @default(OWNER)
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([boardId, userId])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  taskId    String
+  type      NotificationType
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  task Task @relation(fields: [taskId], references: [id])
+}
