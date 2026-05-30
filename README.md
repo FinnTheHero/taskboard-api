@@ -3,14 +3,17 @@
 REST API for the TaskBoard project
 Express 5 + TypeScript + Prisma 7 + PostgreSQL
 
+**Pattern walkthrough (what we built, with code and explanations):** see **[PATTERNS.md](./PATTERNS.md)**.
+
 ## Design patterns
 
 | Pattern   | Location                                              | Role                                          |
 |-----------|-------------------------------------------------------|-----------------------------------------------|
 | MVC       | `routes/` → `controllers/` → `services/` → `prisma/` | Overall layered architecture                  |
-| Singleton | `src/config/database.ts`                              | Single shared PrismaClient + connection pool  |
+| Singleton | `src/config/database.ts`                              | Single shared PrismaClient; `$transaction` needs one pool instance |
 | Observer  | `src/patterns/observer/`                              | Task events broadcast to subscribers          |
 | Factory   | `src/patterns/factory/`                               | Builds notification objects by type           |
+| Strategy  | `src/patterns/strategy/`                              | Interchangeable in-memory task sort algorithms |
 
 ## Setup
 
@@ -31,6 +34,12 @@ pnpm dev
 
 API base URL: `http://localhost:4000/api`
 
+### Transactions & the database Singleton
+
+`db` in `src/config/database.ts` is a **Singleton** `PrismaClient`. Every `db.$transaction(async (tx) => { ... })` runs multiple SQL statements on **one connection** from that client’s pool — they commit together or roll back together.
+
+If you created a second `PrismaClient`, a transaction on `db` could not include writes from the other instance. That is why board create, task move (column change + position reorder), bulk archive, and ownership transfer all go through the exported `db` singleton.
+
 ## Inspecting the DB
 
 ```bash
@@ -47,9 +56,12 @@ pnpm db:studio
 | GET    | `/api/auth/me`                    | ✓    | Current user               |
 | GET    | `/api/boards`                     | ✓    | List boards for user       |
 | POST   | `/api/boards`                     | ✓    | `{ title }`                |
+| POST   | `/api/boards/:id/archive-completed` | ✓  | Bulk-archive Done tasks (`$transaction`) |
+| POST   | `/api/boards/:id/transfer-ownership` | ✓ | `{ newOwnerId }` — owner only (`$transaction`) |
 | POST   | `/api/tasks`                      | ✓    | Create task                |
-| PATCH  | `/api/tasks/:id/move`             | ✓    | `{ toColumnId }`           |
-| GET    | `/api/tasks/by-column/:columnId`  | ✓    | List column tasks          |
+| PATCH  | `/api/tasks/:id/move`             | ✓    | `{ toColumnId, position? }` — move + reorder (`$transaction`) |
+| GET    | `/api/tasks/by-column/:columnId`  | ✓    | List column tasks; `?sort=deadline\|priority\|created\|assignee` |
+| POST   | `/api/tasks/:taskId/comments`     | ✓    | `{ body }` — emits `task.commented` |
 
 ## Smoke test
 

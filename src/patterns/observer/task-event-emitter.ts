@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
-import type { Task, User } from "../../../generated/prisma/client.js";
+import type {
+  Comment,
+  Task,
+  User,
+} from "../../../generated/prisma/client.js";
 
 export type TaskEvents = {
   "task.created": { task: Task; actor: User };
@@ -11,6 +15,13 @@ export type TaskEvents = {
   };
   "task.assigned": { task: Task; assignee: User; actor: User };
   "task.deadline.near": { task: Task; assignee: User };
+  "task.completed": { task: Task; owner: User; actor: User };
+  "task.commented": {
+    task: Task;
+    comment: Comment;
+    assignee: User;
+    actor: User;
+  };
 };
 
 class TypedTaskEventEmitter {

@@ -11,7 +11,14 @@ const createTaskSchema = z.object({
   assigneeId: z.string().optional(),
 });
 
-const moveTaskSchema = z.object({ toColumnId: z.string().min(1) });
+const moveTaskSchema = z.object({
+  toColumnId: z.string().min(1),
+  position: z.number().int().min(0).optional(),
+});
+
+const listByColumnQuerySchema = z.object({
+  sort: z.enum(["deadline", "priority", "created", "assignee"]).optional(),
+});
 
 export class TaskController {
   static async create(req: Request, res: Response): Promise<void> {
@@ -25,8 +32,8 @@ export class TaskController {
     res: Response,
   ): Promise<void> {
     const id = req.params.id;
-    const { toColumnId } = moveTaskSchema.parse(req.body);
-    const task = await TaskService.move(req.user!, id, toColumnId);
+    const { toColumnId, position } = moveTaskSchema.parse(req.body);
+    const task = await TaskService.move(req.user!, id, toColumnId, position);
     res.json(task);
   }
 
@@ -34,7 +41,8 @@ export class TaskController {
     req: Request<{ columnId: string }>,
     res: Response,
   ): Promise<void> {
-    const tasks = await TaskService.listByColumn(req.params.columnId);
+    const { sort } = listByColumnQuerySchema.parse(req.query);
+    const tasks = await TaskService.listByColumn(req.params.columnId, sort);
     res.json(tasks);
   }
 }

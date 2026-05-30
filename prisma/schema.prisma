@@ -39,7 +39,8 @@ model User {
   ownedBoards   Board[]
   memberships   TeamMember[]
   assignedTasks Task[]
-  notifications Notification[]
+  comments        Comment[]
+  notifications   Notification[]
 }
 
 model Board {
@@ -69,13 +70,27 @@ model Task {
   description String?
   priority    Priority?
   deadline    DateTime?
+  position    Int       @default(0)
   columnId    String
   assigneeId  String?
+  archivedAt  DateTime?
   createdAt   DateTime  @default(now())
 
   column        Column         @relation(fields: [columnId], references: [id], onDelete: Cascade)
   assignee      User?          @relation(fields: [assigneeId], references: [id])
+  comments      Comment[]
   notifications Notification[]
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  body      String
+  taskId    String
+  authorId  String
+  createdAt DateTime @default(now())
+
+  task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
 }
 
 model TeamMember {
