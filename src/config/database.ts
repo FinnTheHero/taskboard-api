@@ -2,6 +2,11 @@ import { PrismaClient } from "../../generated/prisma/client.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { env } from "./env.js";
 
+/**
+ * Singleton PrismaClient: every `db.$transaction` runs on one shared pool/connection
+ * scope. Multi-step writes (move + reorder, bulk archive, ownership transfer) must use
+ * this single `db` instance — separate clients cannot participate in the same transaction.
+ */
 class Database {
   private static instance: PrismaClient | null = null;
 

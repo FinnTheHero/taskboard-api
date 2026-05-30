@@ -13,6 +13,7 @@ async function checkAndEmit(): Promise<void> {
     where: {
       deadline: { lte: cutoff, gte: new Date() },
       assigneeId: { not: null },
+      archivedAt: null,
     },
     include: { assignee: true },
   });

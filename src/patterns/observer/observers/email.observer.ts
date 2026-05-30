@@ -10,4 +10,14 @@ export function registerEmailObserver(): void {
   taskEvents.on("task.deadline.near", async ({ task, assignee }) => {
     await NotificationFactory.create("EMAIL", { task, user: assignee }).send();
   });
+
+  taskEvents.on("task.commented", async ({ task, assignee, actor }) => {
+    if (assignee.id === actor.id) return;
+    await NotificationFactory.create("EMAIL", { task, user: assignee }).send();
+  });
+
+  taskEvents.on("task.completed", async ({ task, owner, actor }) => {
+    if (owner.id === actor.id) return;
+    await NotificationFactory.create("EMAIL", { task, user: owner }).send();
+  });
 }
