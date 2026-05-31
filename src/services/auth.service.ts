@@ -40,7 +40,7 @@ export class AuthService {
 
   private static sign(userId: string): string {
     const opts: SignOptions = {
-      expiresIn: env.JWT_EXPIRES_IN as SignOptions["expiresIn"],
+      expiresIn: env.JWT_EXPIRES_IN as Exclude<SignOptions["expiresIn"], undefined>,
     };
     return jwt.sign({ sub: userId }, env.JWT_SECRET, opts);
   }

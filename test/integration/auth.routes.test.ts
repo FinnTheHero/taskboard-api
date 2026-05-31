@@ -1,7 +1,7 @@
 import request from "supertest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../../src/services/auth.service", () => {
+vi.mock("../../src/services/auth.service.js", () => {
   return {
     AuthService: {
       register: vi.fn(),
@@ -10,16 +10,16 @@ vi.mock("../../src/services/auth.service", () => {
   };
 });
 
-vi.mock("../../src/middleware/auth.middleware", () => ({
+vi.mock("../../src/middleware/auth.middleware.js", () => ({
   authenticate: (req: any, _res: any, next: any) => {
     req.user = { id: "u1", name: "Test User", email: "test@example.com", createdAt: new Date() };
     next();
   },
 }));
 
-import { createApp } from "../../src/app";
-import { AuthService } from "../../src/services/auth.service";
-import { HttpError } from "../../src/middleware/error.middleware";
+import { createApp } from "../../src/app.js";
+import { AuthService } from "../../src/services/auth.service.js";
+import { HttpError } from "../../src/middleware/error.middleware.js";
 
 const app = createApp();
 

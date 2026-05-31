@@ -1,3 +1,4 @@
+import type { Prisma } from "../../generated/prisma/client.js";
 import { db } from "../config/database.js";
 import { HttpError } from "../middleware/error.middleware.js";
 
@@ -14,7 +15,7 @@ export class BoardService {
 
   static async create(userId: string, title: string) {
     // Create board with default columns in a single transaction.
-    return db.$transaction(async (tx) => {
+    return db.$transaction(async (tx: Prisma.TransactionClient) => {
       const board = await tx.board.create({
         data: {
           title,
@@ -55,7 +56,7 @@ export class BoardService {
   static async archiveCompletedTasks(boardId: string, userId: string) {
     await BoardService.assertMember(boardId, userId);
 
-    return db.$transaction(async (tx) => {
+    return db.$transaction(async (tx: Prisma.TransactionClient) => {
       const doneColumn = await tx.column.findFirst({
         where: { boardId, title: "Done" },
       });
@@ -89,7 +90,7 @@ export class BoardService {
       throw new HttpError(400, "New owner must already be a board member");
     }
 
-    return db.$transaction(async (tx) => {
+    return db.$transaction(async (tx: Prisma.TransactionClient) => {
       const board = await tx.board.update({
         where: { id: boardId },
         data: { ownerId: newOwnerId },

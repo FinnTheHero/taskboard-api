@@ -10,10 +10,10 @@ import type { ColumnTask } from "../patterns/strategy/task-sort-strategy.js";
 interface CreateTaskInput {
   columnId: string;
   title: string;
-  description?: string;
-  deadline?: Date;
-  priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  assigneeId?: string;
+  description?: string | undefined;
+  deadline?: Date | undefined;
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | undefined;
+  assigneeId?: string | undefined;
 }
 
 async function renumberColumn(
@@ -51,7 +51,17 @@ export class TaskService {
     });
     const position = (_max.position ?? -1) + 1;
 
-    const task = await db.task.create({ data: { ...input, position } });
+    const task = await db.task.create({
+      data: {
+        columnId: input.columnId,
+        title: input.title,
+        position,
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.deadline !== undefined ? { deadline: input.deadline } : {}),
+        ...(input.priority !== undefined ? { priority: input.priority } : {}),
+        ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+      },
+    });
 
     taskEvents.emit("task.created", { task, actor });
 
@@ -93,7 +103,7 @@ export class TaskService {
     const landedInDone =
       toColumn.title === "Done" && fromColumnTitle !== "Done";
 
-    const updated = await db.$transaction(async (tx) => {
+    const updated = await db.$transaction(async (tx: Prisma.TransactionClient) => {
       const isSameColumn = fromColumnId === toColumnId;
 
       const sourceTasks = await tx.task.findMany({

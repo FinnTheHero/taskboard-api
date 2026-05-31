@@ -12,8 +12,8 @@ const PRIORITY_RANK: Record<Priority, number> = {
 export class ByPriorityStrategy implements TaskSortStrategy {
   sort(tasks: ColumnTask[]): ColumnTask[] {
     return [...tasks].sort((a, b) => {
-      const rankA = a.priority ? PRIORITY_RANK[a.priority] : Number.POSITIVE_INFINITY;
-      const rankB = b.priority ? PRIORITY_RANK[b.priority] : Number.POSITIVE_INFINITY;
+      const rankA = a.priority ? (PRIORITY_RANK[a.priority] ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+      const rankB = b.priority ? (PRIORITY_RANK[b.priority] ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
       const byPriority = rankA - rankB;
       return byPriority !== 0 ? byPriority : a.position - b.position;
     });
