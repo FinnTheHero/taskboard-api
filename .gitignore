@@ -1,10 +1,4 @@
 node_modules
-# Keep environment variables out of version control
-.env
-
-/generated/prisma
-
-node_modules
 dist
 .env
 .env.local
@@ -12,5 +6,9 @@ dist
 .DS_Store
 .vscode/*
 !.vscode/settings.json
+.cursor/
+.pnpm-store/
 coverage
 .prisma
+generated/
+docs/

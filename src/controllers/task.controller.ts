@@ -18,6 +18,8 @@ const moveTaskSchema = z.object({
 
 const listByColumnQuerySchema = z.object({
   sort: z.enum(["deadline", "priority", "created", "assignee"]).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  after: z.string().optional(),
 });
 
 export class TaskController {
@@ -41,8 +43,8 @@ export class TaskController {
     req: Request<{ columnId: string }>,
     res: Response,
   ): Promise<void> {
-    const { sort } = listByColumnQuerySchema.parse(req.query);
-    const tasks = await TaskService.listByColumn(req.params.columnId, sort);
-    res.json(tasks);
+    const query = listByColumnQuerySchema.parse(req.query);
+    const result = await TaskService.listByColumn(req.params.columnId, query);
+    res.json(result);
   }
 }

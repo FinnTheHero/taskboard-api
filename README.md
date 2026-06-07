@@ -1,7 +1,7 @@
 # TaskBoard API
 
 REST API for the TaskBoard project
-Express 5 + TypeScript + Prisma 7 + PostgreSQL
+Express 5 + TypeScript + Prisma 7 + PostgreSQL + Socket.io
 
 **Pattern walkthrough (what we built, with code and explanations):** see **[PATTERNS.md](./PATTERNS.md)**.
 
@@ -13,7 +13,7 @@ Express 5 + TypeScript + Prisma 7 + PostgreSQL
 | Singleton | `src/config/database.ts`                              | Single shared PrismaClient; `$transaction` needs one pool instance |
 | Observer  | `src/patterns/observer/`                              | Task events broadcast to subscribers          |
 | Factory   | `src/patterns/factory/`                               | Builds notification objects by type           |
-| Strategy  | `src/patterns/strategy/`                              | Interchangeable in-memory task sort algorithms |
+| Strategy  | `src/patterns/strategy/`                              | Interchangeable task sort algorithms (legacy in-memory; v2 uses DB keyset) |
 
 ## Setup
 
@@ -28,11 +28,21 @@ cp .env.example .env
 # 3. Create database, then:
 pnpm db:migrate
 
-# 4. Run
+# 4. Seed demo data (optional, for live demo)
+pnpm db:seed
+
+# 5. Run
 pnpm dev
 ```
 
 API base URL: `http://localhost:4000/api`
+
+### Demo credentials (after seed)
+
+| User  | Email            | Password   |
+|-------|------------------|------------|
+| Alice | `alice@demo.com` | `demo1234` |
+| Bob   | `bob@demo.com`   | `demo1234` |
 
 ### Transactions & the database Singleton
 
@@ -51,17 +61,121 @@ pnpm db:studio
 | Method | Path                              | Auth | Description                |
 |--------|-----------------------------------|------|----------------------------|
 | GET    | `/api/health`                     | —    | Liveness check             |
-| POST   | `/api/auth/register`              | —    | `{ name, email, password }` |
-| POST   | `/api/auth/login`                 | —    | `{ email, password }`      |
+| POST   | `/api/auth/register`              | —    | `{ name, email, password }` → `{ user, accessToken, refreshToken }` |
+| POST   | `/api/auth/login`                 | —    | `{ email, password }` → `{ user, accessToken, refreshToken }` |
+| POST   | `/api/auth/refresh`               | —    | `{ refreshToken }` → new token pair (rotation) |
+| POST   | `/api/auth/logout`                | —    | `{ refreshToken }` → 204, revokes token |
 | GET    | `/api/auth/me`                    | ✓    | Current user               |
 | GET    | `/api/boards`                     | ✓    | List boards for user       |
 | POST   | `/api/boards`                     | ✓    | `{ title }`                |
+| GET    | `/api/boards/:id/stats`           | ✓    | Board analytics (completion rate, priorities, avg time in column, overdue) |
 | POST   | `/api/boards/:id/archive-completed` | ✓  | Bulk-archive Done tasks (`$transaction`) |
 | POST   | `/api/boards/:id/transfer-ownership` | ✓ | `{ newOwnerId }` — owner only (`$transaction`) |
 | POST   | `/api/tasks`                      | ✓    | Create task                |
 | PATCH  | `/api/tasks/:id/move`             | ✓    | `{ toColumnId, position? }` — move + reorder (`$transaction`) |
-| GET    | `/api/tasks/by-column/:columnId`  | ✓    | List column tasks; `?sort=deadline\|priority\|created\|assignee` |
+| GET    | `/api/tasks/by-column/:columnId`  | ✓    | Paginated tasks; see below |
 | POST   | `/api/tasks/:taskId/comments`     | ✓    | `{ body }` — emits `task.commented` |
+
+### Task list pagination
+
+`GET /api/tasks/by-column/:columnId` returns:
+
+```json
+{
+  "data": [ /* Task[] */ ],
+  "nextCursor": "eyJ...",
+  "hasMore": true
+}
+```
+
+Query params:
+
+- `limit` — page size (default `20`, max `100`)
+- `after` — opaque cursor from previous response’s `nextCursor`
+- `sort` — optional: `deadline`, `priority`, `created`, `assignee` (default: column position order)
+
+When the user changes sort, reset `after` and fetch from the start. Use the same `sort` value on every “load more” request.
+
+### Auth token lifecycle
+
+1. Login/register → store `accessToken` (15 min) and `refreshToken` (7 days)
+2. Send `Authorization: Bearer <accessToken>` on API calls
+3. Before access expiry (or on 401), call `POST /api/auth/refresh` with `{ refreshToken }`
+4. Replace both tokens with the new pair (old refresh token is revoked)
+5. Logout → `POST /api/auth/logout` with `{ refreshToken }`
+
+## Real-time notifications (React)
+
+The backend pushes in-app notifications over WebSocket after saving them to the DB. The frontend can subscribe instead of polling.
+
+### 1. Install client
+
+```bash
+pnpm add socket.io-client
+```
+
+### 2. Connect after login
+
+```ts
+import { io, Socket } from "socket.io-client";
+
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+
+let socket: Socket | null = null;
+
+export function connectNotifications(accessToken: string) {
+  disconnectNotifications();
+
+  socket = io(API_URL, {
+    auth: { token: accessToken },
+    transports: ["websocket", "polling"],
+  });
+
+  socket.on("notification", (payload: { taskId: string; type: string }) => {
+    // Refetch your notifications list or patch local state
+    console.log("New notification", payload);
+  });
+
+  socket.on("connect_error", (err) => {
+    console.error("Socket connect error", err.message);
+  });
+}
+
+export function disconnectNotifications() {
+  socket?.disconnect();
+  socket = null;
+}
+```
+
+### 3. Reconnect after token refresh
+
+When you refresh tokens, disconnect and reconnect with the new `accessToken`:
+
+```ts
+const { accessToken, refreshToken } = await refreshTokens(storedRefreshToken);
+connectNotifications(accessToken);
+```
+
+### 4. Disconnect on logout
+
+```ts
+await fetch(`${API_URL}/api/auth/logout`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ refreshToken }),
+});
+disconnectNotifications();
+```
+
+### Event shape
+
+| Event          | Payload                                      |
+|----------------|----------------------------------------------|
+| `notification` | `{ taskId: string, type: "IN_APP" }`         |
+
+Rooms are keyed by user ID — only the logged-in user receives their notifications.
+
+For production (Railway backend + Cloudflare Pages frontend), set `VITE_API_URL` to your Railway service URL. Socket.io uses the same origin as the REST API.
 
 ## Smoke test
 
@@ -70,9 +184,9 @@ pnpm db:studio
 curl -X POST http://localhost:4000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"name":"Alice","email":"a@b.com","password":"password123"}'
-# → { user: {...}, token: "..." }
+# → { user: {...}, accessToken: "...", refreshToken: "..." }
 
-# 2. Create a board (paste the token from step 1)
+# 2. Create a board (paste the accessToken from step 1)
 TOKEN="..."
 curl -X POST http://localhost:4000/api/boards \
   -H "Authorization: Bearer $TOKEN" \
@@ -80,10 +194,12 @@ curl -X POST http://localhost:4000/api/boards \
   -d '{"title":"My first board"}'
 # → board with 3 columns (To Do / In Progress / Done)
 
-# 3. Create a task in the "To Do" column (use the column id from step 2)
-curl -X POST http://localhost:4000/api/tasks \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"columnId":"<COL_ID>","title":"Buy milk","priority":"HIGH"}'
-# → task created, AND observers fire (check server logs for in-app log line)
+# 3. List tasks in a column (paginated)
+curl "http://localhost:4000/api/tasks/by-column/<COL_ID>?limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+# → { data: [...], nextCursor: null, hasMore: false }
+
+# 4. Board stats
+curl http://localhost:4000/api/boards/<BOARD_ID>/stats \
+  -H "Authorization: Bearer $TOKEN"
 ```

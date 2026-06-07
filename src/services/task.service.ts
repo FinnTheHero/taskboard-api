@@ -4,8 +4,14 @@ import { db } from "../config/database.js";
 import { HttpError } from "../middleware/error.middleware.js";
 import { taskEvents } from "../patterns/observer/task-event-emitter.js";
 import type { SortKey } from "../patterns/strategy/index.js";
-import { sortColumnTasks } from "../patterns/strategy/index.js";
-import type { ColumnTask } from "../patterns/strategy/task-sort-strategy.js";
+import {
+  buildCursorWhere,
+  buildOrderBy,
+  cursorFromTask,
+  cursorModeForSort,
+  decodeCursor,
+  encodeCursor,
+} from "../utils/cursor.js";
 
 interface CreateTaskInput {
   columnId: string;
@@ -14,6 +20,12 @@ interface CreateTaskInput {
   deadline?: Date | undefined;
   priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | undefined;
   assigneeId?: string | undefined;
+}
+
+interface ListByColumnOptions {
+  sort?: SortKey | undefined;
+  limit?: number | undefined;
+  after?: string | undefined;
 }
 
 async function renumberColumn(
@@ -30,7 +42,7 @@ async function renumberColumn(
         data: {
           position,
           ...(id === movedTaskId && newColumnId
-            ? { columnId: newColumnId }
+            ? { columnId: newColumnId, columnEnteredAt: new Date() }
             : {}),
         },
       }),
@@ -162,18 +174,40 @@ export class TaskService {
     return updated;
   }
 
-  static async listByColumn(
-    columnId: string,
-    sort?: SortKey,
-  ): Promise<ColumnTask[]> {
+  static async listByColumn(columnId: string, options: ListByColumnOptions = {}) {
+    const { sort, after } = options;
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+
+    const column = await db.column.findUnique({ where: { id: columnId } });
+    if (!column) throw new HttpError(404, "Column not found");
+
+    const where: Prisma.TaskWhereInput = {
+      columnId,
+      archivedAt: null,
+    };
+
+    if (after) {
+      const cursor = decodeCursor(after);
+      const expectedMode = cursorModeForSort(sort);
+      if (cursor.mode !== expectedMode) {
+        throw new HttpError(400, "Cursor does not match sort mode");
+      }
+      Object.assign(where, buildCursorWhere(sort, cursor));
+    }
+
     const tasks = await db.task.findMany({
-      where: { columnId, archivedAt: null },
+      where,
       include: { assignee: { select: { id: true, name: true, email: true } } },
-      orderBy: { position: "asc" },
+      orderBy: buildOrderBy(sort),
+      take: limit + 1,
     });
 
-    if (!sort) return tasks;
+    const hasMore = tasks.length > limit;
+    const data = hasMore ? tasks.slice(0, limit) : tasks;
+    const last = data.at(-1);
+    const nextCursor =
+      hasMore && last ? encodeCursor(cursorFromTask(sort, last)) : null;
 
-    return sortColumnTasks(tasks, sort);
+    return { data, nextCursor, hasMore };
   }
 }

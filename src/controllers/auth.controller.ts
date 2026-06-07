@@ -13,6 +13,10 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+const refreshSchema = z.object({
+  refreshToken: z.string().min(1),
+});
+
 export class AuthController {
   static async register(req: Request, res: Response): Promise<void> {
     const input = registerSchema.parse(req.body);
@@ -24,6 +28,18 @@ export class AuthController {
     const input = loginSchema.parse(req.body);
     const result = await AuthService.login(input);
     res.json(result);
+  }
+
+  static async refresh(req: Request, res: Response): Promise<void> {
+    const { refreshToken } = refreshSchema.parse(req.body);
+    const result = await AuthService.refresh(refreshToken);
+    res.json(result);
+  }
+
+  static async logout(req: Request, res: Response): Promise<void> {
+    const { refreshToken } = refreshSchema.parse(req.body);
+    await AuthService.logout(refreshToken);
+    res.status(204).send();
   }
 
   static async me(req: Request, res: Response): Promise<void> {

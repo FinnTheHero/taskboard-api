@@ -9,7 +9,8 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 chars"),
-  JWT_EXPIRES_IN: z.string().default("7d"),
+  JWT_EXPIRES_IN: z.string().default("15m"),
+  REFRESH_TOKEN_EXPIRES_IN: z.string().default("7d"),
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM: z.string().default("TaskBoard <noreply@example.com>"),
 });

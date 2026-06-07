@@ -36,11 +36,12 @@ model User {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  ownedBoards   Board[]
-  memberships   TeamMember[]
-  assignedTasks Task[]
-  comments        Comment[]
-  notifications   Notification[]
+  ownedBoards    Board[]
+  memberships    TeamMember[]
+  assignedTasks  Task[]
+  comments       Comment[]
+  notifications  Notification[]
+  refreshTokens  RefreshToken[]
 }
 
 model Board {
@@ -73,13 +74,20 @@ model Task {
   position    Int       @default(0)
   columnId    String
   assigneeId  String?
-  archivedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  archivedAt        DateTime?
+  columnEnteredAt   DateTime  @default(now())
+  createdAt         DateTime  @default(now())
 
   column        Column         @relation(fields: [columnId], references: [id], onDelete: Cascade)
   assignee      User?          @relation(fields: [assigneeId], references: [id])
   comments      Comment[]
   notifications Notification[]
+
+  @@index([columnId, position, id])
+  @@index([columnId, deadline, id])
+  @@index([columnId, createdAt, id])
+  @@index([columnId, priority, id])
+  @@index([columnId, assigneeId, id])
 }
 
 model Comment {
@@ -113,4 +121,19 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id])
   task Task @relation(fields: [taskId], references: [id])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  familyId  String
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
 }

@@ -6,6 +6,8 @@ vi.mock("../../src/services/auth.service.js", () => {
     AuthService: {
       register: vi.fn(),
       login: vi.fn(),
+      refresh: vi.fn(),
+      logout: vi.fn(),
     },
   };
 });
@@ -28,10 +30,11 @@ beforeEach(() => {
 });
 
 describe("Auth routes - integration (mocked services)", () => {
-  it("register - success returns 201 with user and token", async () => {
+  it("register - success returns 201 with user and tokens", async () => {
     (AuthService.register as any).mockResolvedValue({
       user: { id: "u1", name: "T", email: "t@t.com", createdAt: new Date() },
-      token: "tok",
+      accessToken: "access",
+      refreshToken: "refresh",
     });
 
     const res = await request(app)
@@ -40,7 +43,8 @@ describe("Auth routes - integration (mocked services)", () => {
       .expect(201);
 
     expect(res.body).toHaveProperty("user");
-    expect(res.body).toHaveProperty("token");
+    expect(res.body).toHaveProperty("accessToken");
+    expect(res.body).toHaveProperty("refreshToken");
   });
 
   it("register - duplicate email returns 409", async () => {
@@ -54,10 +58,11 @@ describe("Auth routes - integration (mocked services)", () => {
     expect(res.body).toEqual({ error: "Email already registered" });
   });
 
-  it("login - success returns user and token", async () => {
+  it("login - success returns user and tokens", async () => {
     (AuthService.login as any).mockResolvedValue({
       user: { id: "u1", name: "T", email: "t@t.com", createdAt: new Date() },
-      token: "tok",
+      accessToken: "access",
+      refreshToken: "refresh",
     });
 
     const res = await request(app)
@@ -66,7 +71,33 @@ describe("Auth routes - integration (mocked services)", () => {
       .expect(200);
 
     expect(res.body).toHaveProperty("user");
-    expect(res.body).toHaveProperty("token");
+    expect(res.body).toHaveProperty("accessToken");
+    expect(res.body).toHaveProperty("refreshToken");
+  });
+
+  it("refresh - success returns new token pair", async () => {
+    (AuthService.refresh as any).mockResolvedValue({
+      user: { id: "u1", name: "T", email: "t@t.com", createdAt: new Date() },
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+    });
+
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: "old-refresh" })
+      .expect(200);
+
+    expect(res.body).toHaveProperty("accessToken", "new-access");
+    expect(res.body).toHaveProperty("refreshToken", "new-refresh");
+  });
+
+  it("logout - returns 204", async () => {
+    (AuthService.logout as any).mockResolvedValue(undefined);
+
+    await request(app)
+      .post("/api/auth/logout")
+      .send({ refreshToken: "refresh" })
+      .expect(204);
   });
 
   it("me - returns current user when authenticated", async () => {
