@@ -10,6 +10,7 @@ router.get("/", BoardController.list);
 router.post("/", BoardController.create);
 router.get("/:id", BoardController.getById);
 router.get("/:id/stats", StatsController.getBoardStats);
+router.get("/:id/assignable-members", BoardController.listAssignableMembers);
 router.get("/:id/members", BoardController.listMembers);
 router.post("/:id/members", BoardController.grantAccess);
 router.delete("/:id/members/:userId", BoardController.revokeAccess);

@@ -12,4 +12,9 @@ export class StatsController {
     );
     res.json(stats);
   }
+
+  static async getGroupStats(req: Request, res: Response): Promise<void> {
+    const stats = await StatsService.getGroupStats(req.user!.id);
+    res.json(stats);
+  }
 }

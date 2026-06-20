@@ -71,4 +71,15 @@ export class BoardController {
     );
     res.json(members);
   }
+
+  static async listAssignableMembers(
+    req: Request<{ id: string }>,
+    res: Response,
+  ): Promise<void> {
+    const members = await BoardService.listAssignableMembers(
+      req.params.id,
+      req.user!.id,
+    );
+    res.json(members);
+  }
 }

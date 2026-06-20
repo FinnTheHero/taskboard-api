@@ -1,6 +1,6 @@
 # Design patterns — what we built and why
 
-This document walks through the pattern work added to TaskBoard API: **Observer** (new events), **Singleton + transactions**, and **Strategy** (task sorting). It is written so you can read it aloud in a demo or hand it to a teammate who did not write the code.
+This document walks through the pattern work added to TaskBoard API: **Observer** (new events), **Singleton + transactions**, **Strategy** (task sorting and analytics metrics), and **groups RBAC**. It is written so you can read it aloud in a demo or hand it to a teammate who did not write the code.
 
 For setup and curl examples, see [README.md](./README.md).
 
@@ -13,8 +13,9 @@ For setup and curl examples, see [README.md](./README.md).
 3. [Observer — `task.completed` and `task.commented`](#observer--taskcompleted-and-taskcommented)
 4. [Singleton + transactions — multi-step writes](#singleton--transactions--multi-step-writes)
 5. [Strategy — sorting tasks in a column](#strategy--sorting-tasks-in-a-column)
-6. [How the patterns work together](#how-the-patterns-work-together)
-7. [Files added or changed](#files-added-or-changed)
+6. [Strategy — board and group analytics metrics](#strategy--board-and-group-analytics-metrics)
+7. [How the patterns work together](#how-the-patterns-work-together)
+8. [Files added or changed](#files-added-or-changed)
 
 ---
 
@@ -32,8 +33,9 @@ We extended that with:
 | Task | Pattern | What it does |
 |------|---------|----------------|
 | C | Observer | Two new events when a task is completed or commented |
-| D | Singleton + `$transaction` | Move + reorder, bulk archive, transfer ownership — all-or-nothing |
-| E | Strategy | Pick how to sort tasks in a column via `?sort=` |
+| D | Singleton + `$transaction` | Move + reorder, bulk archive, board access — all-or-nothing |
+| E | Strategy (sort) | Pick how to sort tasks in a column via `?sort=` (DB keyset pagination) |
+| F | Strategy (metrics) | Pluggable calculators for board/group analytics |
 
 ---
 
@@ -97,22 +99,25 @@ The shape of the pattern did **not** change — only the list of event names gre
 
 **1. Task lands in the Done column → `task.completed`**
 
-When someone moves a task, `TaskService.move` checks: is the target column titled `"Done"` and was the task **not** already in Done? If yes, after the DB update it emits `task.completed` with the board **owner** (so they can be notified).
+When someone moves a task, `TaskService.move` checks: is the target column titled `"Done"` and was the task **not** already in Done? If yes, after the DB update it emits `task.completed` with the group **MANAGER** (so they can be notified).
 
 ```typescript
 const landedInDone =
   toColumn.title === "Done" && fromColumnTitle !== "Done";
 
 if (landedInDone) {
-  taskEvents.emit("task.completed", {
-    task: updated,
-    owner: toColumn.board.owner,
-    actor,
-  });
+  const manager = await BoardService.getGroupManagerForBoard(toColumn.boardId);
+  if (manager) {
+    taskEvents.emit("task.completed", {
+      task: updated,
+      owner: manager,
+      actor,
+    });
+  }
 }
 ```
 
-**Why not emit on every move?** Only completing (entering Done) is the business moment we care about for the owner.
+**Why the manager, not a board owner?** Boards belong to groups (`Board.groupId`); there is no per-board owner anymore. The product rule is “notify the group manager when work is completed.”
 
 **2. Someone comments → `task.commented`**
 
@@ -140,7 +145,7 @@ if (task.assigneeId) {
 
 Observers register at server startup (`registerObservers()` in `src/server.ts`).
 
-**Email observer** — notify assignee on comment, notify owner on complete (skip if you notified yourself):
+**Email observer** — notify assignee on comment, notify group manager on complete (skip if you notified yourself):
 
 ```typescript
 // src/patterns/observer/observers/email.observer.ts
@@ -228,17 +233,9 @@ return db.$transaction(async (tx) => {
 
 Archived tasks are hidden from column lists and ignored by the deadline scheduler.
 
-### 3. Transfer board ownership
+### 3. Board access changes (manager-only)
 
-`POST /api/boards/:id/transfer-ownership` with `{ "newOwnerId": "..." }` (current owner only).
-
-One transaction updates three things:
-
-1. `Board.ownerId` → new owner  
-2. Old owner’s `TeamMember.role` → `MEMBER`  
-3. New owner’s `TeamMember.role` → `OWNER`  
-
-If step 2 failed after step 1, you could have a board pointing at a user who is still marked `MEMBER` in the team table — the transaction prevents that.
+Grant/revoke board access uses `$transaction`-safe upserts on `BoardMember` rows. Managers control who can open a board within their group.
 
 ### Board create (already existed)
 
@@ -252,92 +249,82 @@ If step 2 failed after step 1, you could have a board pointing at a user who is 
 
 **Strategy** means: define a family of algorithms behind one interface, pick which one to use at **runtime**, and keep each algorithm in its own class.
 
-“Sort by priority” is not the same code path as “sort by deadline”:
+The sort strategy classes under `src/patterns/strategy/` (`ByPriorityStrategy`, `ByDeadlineStrategy`, etc.) are **reference implementations** of that pattern. At runtime, `TaskService.listByColumn` uses **DB keyset pagination** in `src/utils/cursor.ts` — `buildOrderBy(sort)` and `buildCursorWhere(sort)` — so large columns paginate efficiently without loading everything into memory.
 
-- Priority needs a **rank map** (`CRITICAL` > `HIGH` > …), not alphabetical enum order.
-- Deadline must push **null** deadlines to the bottom.
-- Assignee sort uses **names** and puts unassigned tasks last.
-
-That is real logic, not a single `ORDER BY priority ASC` in SQL.
-
-### The interface and context
+### The interface (reference implementations)
 
 ```typescript
 // src/patterns/strategy/task-sort-strategy.ts
 export interface TaskSortStrategy {
   sort(tasks: ColumnTask[]): ColumnTask[];
 }
-
-// src/patterns/strategy/task-sorter.ts
-export class TaskSorter {
-  constructor(private strategy: TaskSortStrategy) {}
-
-  setStrategy(strategy: TaskSortStrategy): void {
-    this.strategy = strategy;
-  }
-
-  sort(tasks: ColumnTask[]): ColumnTask[] {
-    return this.strategy.sort(tasks);
-  }
-}
 ```
 
-- **Strategy** = `ByPriorityStrategy`, `ByDeadlineStrategy`, etc.  
-- **Context** = `TaskSorter` — holds whichever strategy you chose and calls `sort()`.
-
-### Example strategy: priority
-
-```typescript
-const PRIORITY_RANK: Record<Priority, number> = {
-  CRITICAL: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-};
-
-export class ByPriorityStrategy implements TaskSortStrategy {
-  sort(tasks: ColumnTask[]): ColumnTask[] {
-    return [...tasks].sort((a, b) => {
-      const rankA = a.priority ? PRIORITY_RANK[a.priority] : Number.POSITIVE_INFINITY;
-      const rankB = b.priority ? PRIORITY_RANK[b.priority] : Number.POSITIVE_INFINITY;
-      const byPriority = rankA - rankB;
-      return byPriority !== 0 ? byPriority : a.position - b.position;
-    });
-  }
-}
-```
-
-Tasks without priority sink to the bottom (`POSITIVE_INFINITY`). Ties break by manual `position` so order stays stable.
+Each class encodes sort rules that are awkward in one SQL clause (e.g. priority rank map, null deadlines last).
 
 ### Wiring the HTTP API
 
-`GET /api/tasks/by-column/:columnId?sort=deadline|priority|created|assignee`
+`GET /api/tasks/by-column/:columnId?sort=deadline|priority|created|assignee&limit=20&after=...`
 
 ```typescript
-// Controller validates query
-const { sort } = listByColumnQuerySchema.parse(req.query);
-
-// Service loads tasks, then optionally sorts in memory
-const tasks = await db.task.findMany({ ... });
-if (!sort) return tasks;           // default: Kanban position order
-return sortColumnTasks(tasks, sort); // Strategy picked from ?sort=
+// TaskService.listByColumn — DB keyset pagination, not in-memory sort
+const tasks = await db.task.findMany({
+  where: { ...columnFilter, ...buildCursorWhere(sort, cursor) },
+  orderBy: buildOrderBy(sort),
+  take: limit + 1,
+});
 ```
 
-Factory helper:
+When `sort` is omitted, tasks return in Kanban `position` order.
+
+**Why keep the strategy classes?** They document the pattern and mirror the same rules the cursor helpers encode for pagination.
+
+---
+
+## Strategy — board and group analytics metrics
+
+### The idea
+
+Analytics uses the same **Strategy** pattern for **metric calculators**. Each metric (completion rate, overdue count, assignee workload, etc.) is a class implementing `BoardMetricStrategy` with a `compute(ctx)` method.
+
+`StatsService` is the **context/orchestrator**: it builds a shared `MetricContext` (column IDs, Done column, overdue scope), runs each strategy, and merges partial results.
+
+### Endpoints
+
+| Method | Path | Scope |
+|--------|------|-------|
+| `GET` | `/api/boards/:id/stats` | Single board (requires board access) |
+| `GET` | `/api/groups/stats` | All boards the user can access in their group |
+
+### Metric strategies
+
+Located in `src/patterns/strategy/metrics/`:
+
+| Class | Returns |
+|-------|---------|
+| `CompletionRateMetric` | `totalTasks`, `doneCount`, `completionRate` |
+| `PriorityBreakdownMetric` | `tasksByPriority` |
+| `OverdueCountMetric` | `overdueCount` (excludes Done column) |
+| `UnassignedCountMetric` | `unassignedCount` |
+| `ColumnDistributionMetric` | `tasksByColumn` |
+| `AssigneeWorkloadMetric` | `byAssignee` (task + overdue counts) |
+| `AvgTimeInColumnMetric` | `avgTimeInColumn` (uses `columnEnteredAt` from move transactions) |
 
 ```typescript
-// src/patterns/strategy/index.ts
-export function createSortStrategy(key: SortKey): TaskSortStrategy {
-  switch (key) {
-    case "deadline": return new ByDeadlineStrategy();
-    case "priority": return new ByPriorityStrategy();
-    case "created":  return new ByCreatedDateStrategy();
-    case "assignee": return new ByAssigneeStrategy();
+// src/patterns/strategy/metrics/index.ts
+export async function computeMetrics(ctx: MetricContext): Promise<BoardMetricResult> {
+  for (const strategy of createMetricStrategies()) {
+    Object.assign(result, await strategy.compute(ctx));
   }
+  return result;
 }
 ```
 
-**Why load from DB then sort in JS?** The strategies encapsulate rules that are awkward or wrong in one SQL clause. We fetch the column’s tasks once, then apply the chosen algorithm — classic Strategy.
+**Why Strategy here?** Adding a new chart metric = new class + register in `createMetricStrategies()`, without bloating `StatsService`.
+
+**Why not Observer/Factory?** Stats are read-only aggregations; no events or notifications are emitted on fetch.
+
+The frontend **Group Analytics** page (`/group/analytics`) consumes `GET /groups/stats` and renders charts with Recharts.
 
 ---
 
@@ -346,10 +333,11 @@ export function createSortStrategy(key: SortKey): TaskSortStrategy {
 Example: user drags a task to **Done**, then a teammate comments.
 
 1. **`TaskService.move`** runs a **transaction** (column + positions), then **`emit`s** `task.moved` and `task.completed`.
-2. **Observers** hear `task.completed` and email the **board owner** (Factory builds the notification).
+2. **Observers** hear `task.completed` and email the **group manager** (Factory builds the notification).
 3. Teammate **`POST`s a comment** → **`CommentService`** saves it and **`emit`s** `task.commented`.
 4. Observers notify the **assignee**.
-5. Frontend loads the column with **`?sort=priority`** → **Strategy** reorders the JSON response.
+5. Frontend loads the column with **`?sort=priority`** → **Strategy** (DB keyset) paginates the response.
+6. Manager opens **Group Analytics** → **`StatsService`** runs **metric strategies** across accessible boards.
 
 Each pattern has a narrow job; they compose without tangling.
 
@@ -361,8 +349,10 @@ Each pattern has a narrow job; they compose without tangling.
 |------|--------|
 | Observer events | `src/patterns/observer/task-event-emitter.ts`, `observers/email.observer.ts`, `observers/in-app.observer.ts` |
 | Comments | `src/services/comment.service.ts`, `src/controllers/comment.controller.ts`, `prisma` Comment model |
-| Transactions | `src/services/task.service.ts` (move), `src/services/board.service.ts` (archive, transfer), `src/config/database.ts` |
-| Strategy | `src/patterns/strategy/*` |
+| Transactions | `src/services/task.service.ts` (move), `src/services/board.service.ts` (archive, access) |
+| Strategy (sort) | `src/patterns/strategy/*`, `src/utils/cursor.ts` |
+| Strategy (metrics) | `src/patterns/strategy/metrics/*`, `src/services/stats.service.ts` |
+| Stats routes | `src/routes/board.routes.ts`, `src/routes/group.routes.ts` |
 | Schema | `prisma/schema.prisma`, migrations under `prisma/migrations/` |
 | Routes | `src/routes/task.routes.ts`, `src/routes/board.routes.ts` |
 
@@ -375,7 +365,7 @@ Each pattern has a narrow job; they compose without tangling.
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:4000/api/tasks/by-column/COLUMN_ID?sort=priority"
 
-# Move to Done (fires task.completed for owner)
+# Move to Done (fires task.completed for group manager)
 curl -X PATCH -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"toColumnId":"DONE_COLUMN_ID"}' \

@@ -7,6 +7,7 @@ const router = Router();
 router.use(authenticate);
 
 router.post("/", TaskController.create);
+router.patch("/:id/assign", TaskController.assign);
 router.patch("/:id/move", TaskController.move);
 router.get("/by-column/:columnId", TaskController.listByColumn);
 router.post("/:taskId/comments", CommentController.create);

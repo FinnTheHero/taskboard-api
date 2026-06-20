@@ -16,6 +16,10 @@ const moveTaskSchema = z.object({
   position: z.number().int().min(0).optional(),
 });
 
+const assignTaskSchema = z.object({
+  assigneeId: z.string().nullable(),
+});
+
 const listByColumnQuerySchema = z.object({
   sort: z.enum(["deadline", "priority", "created", "assignee"]).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -50,5 +54,14 @@ export class TaskController {
       query,
     );
     res.json(result);
+  }
+
+  static async assign(
+    req: Request<{ id: string }>,
+    res: Response,
+  ): Promise<void> {
+    const { assigneeId } = assignTaskSchema.parse(req.body);
+    const task = await TaskService.assign(req.user!, req.params.id, assigneeId);
+    res.json(task);
   }
 }

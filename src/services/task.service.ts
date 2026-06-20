@@ -60,6 +60,10 @@ export class TaskService {
 
     await BoardService.assertBoardAccess(column.boardId, actor.id);
 
+    if (input.assigneeId) {
+      await BoardService.assertBoardMemberUser(column.boardId, input.assigneeId);
+    }
+
     const { _max } = await db.task.aggregate({
       where: { columnId: input.columnId, archivedAt: null },
       _max: { position: true },
@@ -76,6 +80,7 @@ export class TaskService {
         ...(input.priority !== undefined ? { priority: input.priority } : {}),
         ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
       },
+      include: { assignee: { select: { id: true, name: true, email: true } } },
     });
 
     taskEvents.emit("task.created", { task, actor });
@@ -223,5 +228,39 @@ export class TaskService {
       hasMore && last ? encodeCursor(cursorFromTask(sort, last)) : null;
 
     return { data, nextCursor, hasMore };
+  }
+
+  static async assign(
+    actor: User,
+    taskId: string,
+    assigneeId: string | null,
+  ) {
+    const task = await db.task.findUnique({
+      where: { id: taskId },
+      include: { column: true },
+    });
+    if (!task) throw new HttpError(404, "Task not found");
+    if (task.archivedAt) throw new HttpError(400, "Cannot assign archived task");
+
+    await BoardService.assertBoardAccess(task.column.boardId, actor.id);
+
+    if (assigneeId !== null) {
+      await BoardService.assertBoardMemberUser(task.column.boardId, assigneeId);
+    }
+
+    const updated = await db.task.update({
+      where: { id: taskId },
+      data: { assigneeId },
+      include: { assignee: { select: { id: true, name: true, email: true } } },
+    });
+
+    if (assigneeId && assigneeId !== actor.id) {
+      const assignee = await db.user.findUnique({ where: { id: assigneeId } });
+      if (assignee) {
+        taskEvents.emit("task.assigned", { task: updated, assignee, actor });
+      }
+    }
+
+    return updated;
   }
 }

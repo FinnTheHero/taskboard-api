@@ -95,6 +95,27 @@ export class BoardService {
     });
   }
 
+  static async assertBoardMemberUser(boardId: string, assigneeId: string) {
+    const member = await db.boardMember.findUnique({
+      where: { boardId_userId: { boardId, userId: assigneeId } },
+    });
+    if (!member) {
+      throw new HttpError(403, "Assignee must have access to this board");
+    }
+    return member;
+  }
+
+  static async listAssignableMembers(boardId: string, userId: string) {
+    await BoardService.assertBoardAccess(boardId, userId);
+
+    return db.boardMember.findMany({
+      where: { boardId },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+  }
+
   static async grantAccess(boardId: string, managerId: string, targetUserId: string) {
     const { group } = await GroupService.assertManager(managerId);
     await BoardService.assertBoardInUserGroup(boardId, managerId);

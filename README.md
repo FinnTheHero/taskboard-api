@@ -13,7 +13,7 @@ Express 5 + TypeScript + Prisma 7 + PostgreSQL + Socket.io
 | Singleton | `src/config/database.ts`                              | Single shared PrismaClient; `$transaction` needs one pool instance |
 | Observer  | `src/patterns/observer/`                              | Task events broadcast to subscribers          |
 | Factory   | `src/patterns/factory/`                               | Builds notification objects by type           |
-| Strategy  | `src/patterns/strategy/`                              | Interchangeable task sort algorithms (legacy in-memory; v2 uses DB keyset) |
+| Strategy  | `src/patterns/strategy/`                              | Sort via DB keyset (`cursor.ts`); analytics metrics in `strategy/metrics/` |
 
 ## Setup
 
@@ -77,6 +77,7 @@ pnpm db:studio
 | GET    | `/api/auth/me`                    | ✓    | Current user               |
 | GET    | `/api/groups/me`                  | ✓    | Current group + role, or null |
 | POST   | `/api/groups/join`                | ✓    | `{ joinCode }` — 6-digit code |
+| GET    | `/api/groups/stats`               | ✓    | Group analytics across accessible boards |
 | GET    | `/api/groups/members`             | ✓    | List members in your group |
 | POST   | `/api/groups/members`             | ✓ MANAGER | `{ email }` — add user as MEMBER |
 | DELETE | `/api/groups/members/:userId`     | ✓ MANAGER | Remove member from group |
@@ -84,11 +85,13 @@ pnpm db:studio
 | GET    | `/api/boards/:id`                 | ✓    | Full board (requires board access) |
 | POST   | `/api/boards`                     | ✓ MANAGER | `{ title }` — create board in group |
 | GET    | `/api/boards/:id/members`         | ✓ MANAGER | List users with board access |
+| GET    | `/api/boards/:id/assignable-members` | ✓ | List assignable users (any board member) |
 | POST   | `/api/boards/:id/members`         | ✓ MANAGER | `{ userId }` — grant board access |
 | DELETE | `/api/boards/:id/members/:userId` | ✓ MANAGER | Revoke board access |
-| GET    | `/api/boards/:id/stats`           | ✓    | Board analytics (requires board access) |
+| GET    | `/api/boards/:id/stats`           | ✓    | Board analytics (requires board access); see below |
 | POST   | `/api/boards/:id/archive-completed` | ✓ MANAGER | Bulk-archive Done tasks (requires board access) |
-| POST   | `/api/tasks`                      | ✓    | Create task                |
+| POST   | `/api/tasks`                      | ✓    | Create task (`assigneeId` optional; must be a board member) |
+| PATCH  | `/api/tasks/:id/assign`           | ✓    | `{ assigneeId: string \| null }` — assign or unassign |
 | PATCH  | `/api/tasks/:id/move`             | ✓    | `{ toColumnId, position? }` — move + reorder (`$transaction`) |
 | GET    | `/api/tasks/by-column/:columnId`  | ✓    | Paginated tasks; see below |
 | POST   | `/api/tasks/:taskId/comments`     | ✓    | `{ body }` — emits `task.commented` |
@@ -112,6 +115,26 @@ Query params:
 - `sort` — optional: `deadline`, `priority`, `created`, `assignee` (default: column position order)
 
 When the user changes sort, reset `after` and fetch from the start. Use the same `sort` value on every “load more” request.
+
+### Board and group analytics
+
+`GET /api/boards/:id/stats` and `GET /api/groups/stats` return aggregated task metrics computed by **Strategy** classes in `src/patterns/strategy/metrics/`:
+
+```json
+{
+  "totalTasks": 10,
+  "doneCount": 3,
+  "completionRate": 30,
+  "overdueCount": 2,
+  "unassignedCount": 1,
+  "tasksByPriority": { "HIGH": 2, "MEDIUM": 5 },
+  "tasksByColumn": [{ "column": "To Do", "count": 4 }],
+  "byAssignee": [{ "userId": "...", "name": "Alice", "taskCount": 5, "overdueCount": 1 }],
+  "avgTimeInColumn": [{ "column": "In Progress", "avgHours": 8.5 }]
+}
+```
+
+Group stats add `groupId`, `groupName`, `boardCount`, `accessibleBoardCount`, and `byBoard[]` (per-board completion breakdown). Overdue counts exclude tasks in the Done column.
 
 ### Auth token lifecycle
 

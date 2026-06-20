@@ -1,83 +1,102 @@
 import { db } from "../config/database.js";
+import {
+  buildMetricContext,
+  computeMetrics,
+  type BoardMetricResult,
+  type ColumnInfo,
+} from "../patterns/strategy/metrics/index.js";
 import { BoardService } from "./board.service.js";
+import { GroupService } from "./group.service.js";
+
+export interface BoardStats extends BoardMetricResult {
+  boardId: string;
+}
+
+export interface GroupBoardStatsEntry {
+  boardId: string;
+  title: string;
+  totalTasks: number;
+  completionRate: number;
+  overdueCount: number;
+}
+
+export interface GroupStats extends BoardMetricResult {
+  groupId: string;
+  groupName: string;
+  boardCount: number;
+  accessibleBoardCount: number;
+  byBoard: GroupBoardStatsEntry[];
+}
+
+async function loadColumnsForBoard(boardId: string): Promise<ColumnInfo[]> {
+  return db.column.findMany({
+    where: { boardId },
+    orderBy: { position: "asc" },
+    select: { id: true, title: true, position: true, boardId: true },
+  });
+}
 
 export class StatsService {
-  static async getBoardStats(boardId: string, userId: string) {
+  static async getBoardStats(
+    boardId: string,
+    userId: string,
+  ): Promise<BoardStats> {
     await BoardService.assertBoardAccess(boardId, userId);
 
-    const columns = await db.column.findMany({
-      where: { boardId },
-      orderBy: { position: "asc" },
-    });
-    const columnIds = columns.map((c) => c.id);
-    const doneColumn = columns.find((c) => c.title === "Done");
+    const columns = await loadColumnsForBoard(boardId);
+    const ctx = buildMetricContext(columns);
+    const metrics = await computeMetrics(ctx);
 
-    const totalTasks = await db.task.count({
-      where: { columnId: { in: columnIds }, archivedAt: null },
-    });
+    return {
+      boardId,
+      ...metrics,
+    };
+  }
 
-    const doneCount = doneColumn
-      ? await db.task.count({
-          where: { columnId: doneColumn.id, archivedAt: null },
-        })
-      : 0;
+  static async getGroupStats(userId: string): Promise<GroupStats> {
+    const { group } = await GroupService.assertInGroup(userId);
 
-    const completionRate =
-      totalTasks === 0
-        ? 0
-        : Math.round((doneCount / totalTasks) * 1000) / 10;
-
-    const priorityGroups = await db.task.groupBy({
-      by: ["priority"],
-      where: {
-        columnId: { in: columnIds },
-        archivedAt: null,
-        priority: { not: null },
+    const boards = await db.board.findMany({
+      where: { groupId: group.id },
+      include: {
+        members: { where: { userId }, select: { userId: true } },
       },
-      _count: true,
+      orderBy: { createdAt: "desc" },
     });
 
-    const tasksByPriority: Record<string, number> = {};
-    for (const group of priorityGroups) {
-      if (group.priority) {
-        tasksByPriority[group.priority] = group._count;
-      }
+    const accessibleBoards = boards.filter((b) => b.members.length > 0);
+    const allColumns: ColumnInfo[] = [];
+
+    for (const board of accessibleBoards) {
+      const columns = await loadColumnsForBoard(board.id);
+      allColumns.push(...columns);
     }
 
-    const now = Date.now();
-    const avgTimeInColumn = await Promise.all(
-      columns.map(async (col) => {
-        const tasks = await db.task.findMany({
-          where: { columnId: col.id, archivedAt: null },
-          select: { columnEnteredAt: true },
-        });
-        if (tasks.length === 0) {
-          return { column: col.title, avgHours: 0 };
-        }
-        const totalHours = tasks.reduce(
-          (sum, t) => sum + (now - t.columnEnteredAt.getTime()) / 3_600_000,
-          0,
-        );
+    const ctx = buildMetricContext(allColumns);
+    const metrics = await computeMetrics(ctx);
+
+    const byBoard: GroupBoardStatsEntry[] = await Promise.all(
+      accessibleBoards.map(async (board) => {
+        const columns = await loadColumnsForBoard(board.id);
+        const boardCtx = buildMetricContext(columns);
+        const boardMetrics = await computeMetrics(boardCtx);
         return {
-          column: col.title,
-          avgHours: Math.round((totalHours / tasks.length) * 10) / 10,
+          boardId: board.id,
+          title: board.title,
+          totalTasks: boardMetrics.totalTasks ?? 0,
+          completionRate: boardMetrics.completionRate ?? 0,
+          overdueCount: boardMetrics.overdueCount ?? 0,
         };
       }),
     );
 
-    const overdueCount = await db.task.count({
-      where: {
-        columnId: { in: columnIds },
-        archivedAt: null,
-        deadline: { lt: new Date() },
-      },
-    });
-
     return {
-      completionRate,
-      tasksByPriority,
-      avgTimeInColumn,
-      overdueCount,
+      groupId: group.id,
+      groupName: group.name,
+      boardCount: boards.length,
+      accessibleBoardCount: accessibleBoards.length,
+      byBoard,
+      ...metrics,
     };
   }
 }
