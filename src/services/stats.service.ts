@@ -3,7 +3,7 @@ import { BoardService } from "./board.service.js";
 
 export class StatsService {
   static async getBoardStats(boardId: string, userId: string) {
-    await BoardService.assertMember(boardId, userId);
+    await BoardService.assertBoardAccess(boardId, userId);
 
     const columns = await db.column.findMany({
       where: { boardId },

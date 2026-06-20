@@ -4,14 +4,19 @@ import { BoardService } from "../services/board.service.js";
 
 const createBoardSchema = z.object({ title: z.string().min(1).max(120) });
 
-const transferOwnershipSchema = z.object({
-  newOwnerId: z.string().min(1),
+const boardMemberSchema = z.object({
+  userId: z.string().min(1),
 });
 
 export class BoardController {
   static async list(req: Request, res: Response): Promise<void> {
     const boards = await BoardService.listForUser(req.user!.id);
     res.json(boards);
+  }
+
+  static async getById(req: Request<{ id: string }>, res: Response): Promise<void> {
+    const board = await BoardService.getById(req.params.id, req.user!.id);
+    res.json(board);
   }
 
   static async create(req: Request, res: Response): Promise<void> {
@@ -31,16 +36,39 @@ export class BoardController {
     res.json(result);
   }
 
-  static async transferOwnership(
+  static async grantAccess(
     req: Request<{ id: string }>,
     res: Response,
   ): Promise<void> {
-    const { newOwnerId } = transferOwnershipSchema.parse(req.body);
-    const board = await BoardService.transferOwnership(
+    const { userId } = boardMemberSchema.parse(req.body);
+    const member = await BoardService.grantAccess(
       req.params.id,
       req.user!.id,
-      newOwnerId,
+      userId,
     );
-    res.json(board);
+    res.status(201).json(member);
+  }
+
+  static async revokeAccess(
+    req: Request<{ id: string; userId: string }>,
+    res: Response,
+  ): Promise<void> {
+    await BoardService.revokeAccess(
+      req.params.id,
+      req.user!.id,
+      req.params.userId,
+    );
+    res.status(204).send();
+  }
+
+  static async listMembers(
+    req: Request<{ id: string }>,
+    res: Response,
+  ): Promise<void> {
+    const members = await BoardService.listBoardMembers(
+      req.params.id,
+      req.user!.id,
+    );
+    res.json(members);
   }
 }

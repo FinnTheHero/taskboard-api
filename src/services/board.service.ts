@@ -1,26 +1,48 @@
 import type { Prisma } from "../../generated/prisma/client.js";
 import { db } from "../config/database.js";
 import { HttpError } from "../middleware/error.middleware.js";
+import { GroupService } from "./group.service.js";
 
 export class BoardService {
   static async listForUser(userId: string) {
-    return db.board.findMany({
-      where: {
-        OR: [{ ownerId: userId }, { members: { some: { userId } } }],
+    const { group } = await GroupService.assertInGroup(userId);
+
+    const boards = await db.board.findMany({
+      where: { groupId: group.id },
+      include: {
+        members: { where: { userId }, select: { userId: true } },
       },
-      include: { columns: { orderBy: { position: "asc" } } },
       orderBy: { createdAt: "desc" },
+    });
+
+    return boards.map((board) => ({
+      id: board.id,
+      title: board.title,
+      groupId: board.groupId,
+      createdAt: board.createdAt,
+      hasAccess: board.members.length > 0,
+    }));
+  }
+
+  static async getById(boardId: string, userId: string) {
+    await BoardService.assertBoardInUserGroup(boardId, userId);
+    await BoardService.assertBoardAccess(boardId, userId);
+
+    return db.board.findUniqueOrThrow({
+      where: { id: boardId },
+      include: { columns: { orderBy: { position: "asc" } } },
     });
   }
 
   static async create(userId: string, title: string) {
-    // Create board with default columns in a single transaction.
+    const { group } = await GroupService.assertManager(userId);
+
     return db.$transaction(async (tx: Prisma.TransactionClient) => {
       const board = await tx.board.create({
         data: {
           title,
-          ownerId: userId,
-          members: { create: { userId, role: "OWNER" } },
+          groupId: group.id,
+          members: { create: { userId } },
           columns: {
             create: [
               { title: "To Do", position: 0 },
@@ -35,26 +57,88 @@ export class BoardService {
     });
   }
 
-  static async assertMember(boardId: string, userId: string) {
-    const member = await db.teamMember.findUnique({
-      where: { boardId_userId: { boardId, userId } },
-    });
-    if (!member) throw new HttpError(403, "Not a member of this board");
-    return member;
-  }
-
-  static async assertOwner(boardId: string, userId: string) {
+  static async assertBoardInUserGroup(boardId: string, userId: string) {
+    const { group } = await GroupService.assertInGroup(userId);
     const board = await db.board.findUnique({ where: { id: boardId } });
     if (!board) throw new HttpError(404, "Board not found");
-    if (board.ownerId !== userId) {
-      throw new HttpError(403, "Only the board owner can perform this action");
+    if (board.groupId !== group.id) {
+      throw new HttpError(403, "Board belongs to a different group");
     }
     return board;
   }
 
-  /** Atomically stamp archivedAt on every non-archived task in the Done column. */
+  static async assertBoardAccess(boardId: string, userId: string) {
+    await BoardService.assertBoardInUserGroup(boardId, userId);
+    const member = await db.boardMember.findUnique({
+      where: { boardId_userId: { boardId, userId } },
+    });
+    if (!member) {
+      throw new HttpError(403, "You do not have access to this board");
+    }
+    return member;
+  }
+
+  /** @deprecated Use assertBoardAccess */
+  static async assertMember(boardId: string, userId: string) {
+    return BoardService.assertBoardAccess(boardId, userId);
+  }
+
+  static async listBoardMembers(boardId: string, userId: string) {
+    await GroupService.assertManager(userId);
+    await BoardService.assertBoardInUserGroup(boardId, userId);
+
+    return db.boardMember.findMany({
+      where: { boardId },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+  }
+
+  static async grantAccess(boardId: string, managerId: string, targetUserId: string) {
+    const { group } = await GroupService.assertManager(managerId);
+    await BoardService.assertBoardInUserGroup(boardId, managerId);
+
+    const targetMember = await db.groupMember.findUnique({
+      where: { userId: targetUserId },
+    });
+    if (!targetMember || targetMember.groupId !== group.id) {
+      throw new HttpError(400, "User must be a member of your group");
+    }
+
+    return db.boardMember.upsert({
+      where: { boardId_userId: { boardId, userId: targetUserId } },
+      create: { boardId, userId: targetUserId },
+      update: {},
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+  }
+
+  static async revokeAccess(
+    boardId: string,
+    managerId: string,
+    targetUserId: string,
+  ) {
+    await GroupService.assertManager(managerId);
+    await BoardService.assertBoardInUserGroup(boardId, managerId);
+
+    const member = await db.boardMember.findUnique({
+      where: { boardId_userId: { boardId, userId: targetUserId } },
+    });
+    if (!member) {
+      throw new HttpError(404, "User does not have access to this board");
+    }
+
+    await db.boardMember.delete({
+      where: { boardId_userId: { boardId, userId: targetUserId } },
+    });
+  }
+
   static async archiveCompletedTasks(boardId: string, userId: string) {
-    await BoardService.assertMember(boardId, userId);
+    await GroupService.assertManager(userId);
+    await BoardService.assertBoardAccess(boardId, userId);
 
     return db.$transaction(async (tx: Prisma.TransactionClient) => {
       const doneColumn = await tx.column.findFirst({
@@ -71,43 +155,21 @@ export class BoardService {
     });
   }
 
-  /** Atomically swap board.ownerId and OWNER/MEMBER roles on TeamMember. */
-  static async transferOwnership(
-    boardId: string,
-    currentOwnerId: string,
-    newOwnerId: string,
-  ) {
-    if (currentOwnerId === newOwnerId) {
-      throw new HttpError(400, "New owner must be a different user");
-    }
-
-    await BoardService.assertOwner(boardId, currentOwnerId);
-
-    const newOwnerMember = await db.teamMember.findUnique({
-      where: { boardId_userId: { boardId, userId: newOwnerId } },
+  static async getGroupManagerForBoard(boardId: string) {
+    const board = await db.board.findUnique({
+      where: { id: boardId },
+      include: {
+        group: {
+          include: {
+            members: {
+              where: { role: "MANAGER" },
+              include: { user: true },
+              take: 1,
+            },
+          },
+        },
+      },
     });
-    if (!newOwnerMember) {
-      throw new HttpError(400, "New owner must already be a board member");
-    }
-
-    return db.$transaction(async (tx: Prisma.TransactionClient) => {
-      const board = await tx.board.update({
-        where: { id: boardId },
-        data: { ownerId: newOwnerId },
-        include: { owner: { select: { id: true, name: true, email: true } } },
-      });
-
-      await tx.teamMember.update({
-        where: { boardId_userId: { boardId, userId: currentOwnerId } },
-        data: { role: "MEMBER" },
-      });
-
-      await tx.teamMember.update({
-        where: { boardId_userId: { boardId, userId: newOwnerId } },
-        data: { role: "OWNER" },
-      });
-
-      return board;
-    });
+    return board?.group.members[0]?.user ?? null;
   }
 }

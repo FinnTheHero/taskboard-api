@@ -39,16 +39,25 @@ API base URL: `http://localhost:4000/api`
 
 ### Demo credentials (after seed)
 
-| User  | Email            | Password   |
-|-------|------------------|------------|
-| Alice | `alice@demo.com` | `demo1234` |
-| Bob   | `bob@demo.com`   | `demo1234` |
+| User  | Email            | Password   | Group role |
+|-------|------------------|------------|------------|
+| Alice | `alice@demo.com` | `demo1234` | MANAGER in Acme Corp (`100001`) |
+| Bob   | `bob@demo.com`   | `demo1234` | Not in a group — join with a code |
+
+### Demo group join codes
+
+| Group      | Join code |
+|------------|-----------|
+| Acme Corp  | `100001`  |
+| Beta Labs  | `200002`  |
+
+Users can only belong to **one group**. Join via `POST /api/groups/join` with `{ "joinCode": "100001" }`.
 
 ### Transactions & the database Singleton
 
 `db` in `src/config/database.ts` is a **Singleton** `PrismaClient`. Every `db.$transaction(async (tx) => { ... })` runs multiple SQL statements on **one connection** from that client’s pool — they commit together or roll back together.
 
-If you created a second `PrismaClient`, a transaction on `db` could not include writes from the other instance. That is why board create, task move (column change + position reorder), bulk archive, and ownership transfer all go through the exported `db` singleton.
+If you created a second `PrismaClient`, a transaction on `db` could not include writes from the other instance. That is why board create, task move (column change + position reorder), bulk archive, and board access changes all go through the exported `db` singleton.
 
 ## Inspecting the DB
 
@@ -66,11 +75,19 @@ pnpm db:studio
 | POST   | `/api/auth/refresh`               | —    | `{ refreshToken }` → new token pair (rotation) |
 | POST   | `/api/auth/logout`                | —    | `{ refreshToken }` → 204, revokes token |
 | GET    | `/api/auth/me`                    | ✓    | Current user               |
-| GET    | `/api/boards`                     | ✓    | List boards for user       |
-| POST   | `/api/boards`                     | ✓    | `{ title }`                |
-| GET    | `/api/boards/:id/stats`           | ✓    | Board analytics (completion rate, priorities, avg time in column, overdue) |
-| POST   | `/api/boards/:id/archive-completed` | ✓  | Bulk-archive Done tasks (`$transaction`) |
-| POST   | `/api/boards/:id/transfer-ownership` | ✓ | `{ newOwnerId }` — owner only (`$transaction`) |
+| GET    | `/api/groups/me`                  | ✓    | Current group + role, or null |
+| POST   | `/api/groups/join`                | ✓    | `{ joinCode }` — 6-digit code |
+| GET    | `/api/groups/members`             | ✓    | List members in your group |
+| POST   | `/api/groups/members`             | ✓ MANAGER | `{ email }` — add user as MEMBER |
+| DELETE | `/api/groups/members/:userId`     | ✓ MANAGER | Remove member from group |
+| GET    | `/api/boards`                     | ✓    | All group boards with `hasAccess` flag |
+| GET    | `/api/boards/:id`                 | ✓    | Full board (requires board access) |
+| POST   | `/api/boards`                     | ✓ MANAGER | `{ title }` — create board in group |
+| GET    | `/api/boards/:id/members`         | ✓ MANAGER | List users with board access |
+| POST   | `/api/boards/:id/members`         | ✓ MANAGER | `{ userId }` — grant board access |
+| DELETE | `/api/boards/:id/members/:userId` | ✓ MANAGER | Revoke board access |
+| GET    | `/api/boards/:id/stats`           | ✓    | Board analytics (requires board access) |
+| POST   | `/api/boards/:id/archive-completed` | ✓ MANAGER | Bulk-archive Done tasks (requires board access) |
 | POST   | `/api/tasks`                      | ✓    | Create task                |
 | PATCH  | `/api/tasks/:id/move`             | ✓    | `{ toColumnId, position? }` — move + reorder (`$transaction`) |
 | GET    | `/api/tasks/by-column/:columnId`  | ✓    | Paginated tasks; see below |

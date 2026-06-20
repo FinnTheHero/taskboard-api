@@ -8,8 +8,11 @@ router.use(authenticate);
 
 router.get("/", BoardController.list);
 router.post("/", BoardController.create);
+router.get("/:id", BoardController.getById);
 router.get("/:id/stats", StatsController.getBoardStats);
+router.get("/:id/members", BoardController.listMembers);
+router.post("/:id/members", BoardController.grantAccess);
+router.delete("/:id/members/:userId", BoardController.revokeAccess);
 router.post("/:id/archive-completed", BoardController.archiveCompleted);
-router.post("/:id/transfer-ownership", BoardController.transferOwnership);
 
 export default router;

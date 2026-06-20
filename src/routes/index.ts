@@ -1,6 +1,7 @@
 import { Router } from "express";
 import authRoutes from "./auth.routes.js";
 import boardRoutes from "./board.routes.js";
+import groupRoutes from "./group.routes.js";
 import taskRoutes from "./task.routes.js";
 
 const router = Router();
@@ -10,6 +11,7 @@ router.get("/health", (_req, res) => {
 });
 
 router.use("/auth", authRoutes);
+router.use("/groups", groupRoutes);
 router.use("/boards", boardRoutes);
 router.use("/tasks", taskRoutes);
 

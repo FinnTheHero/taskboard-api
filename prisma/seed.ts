@@ -6,9 +6,25 @@ import { PrismaPg } from "@prisma/adapter-pg";
 const DEMO_PASSWORD = "demo1234";
 const ALICE_EMAIL = "alice@demo.com";
 const BOB_EMAIL = "bob@demo.com";
+const ACME_CODE = "100001";
+const BETA_CODE = "200002";
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL! });
 const db = new PrismaClient({ adapter });
+
+async function deleteBoardCascade(boardId: string) {
+  await db.notification.deleteMany({
+    where: { task: { column: { boardId } } },
+  });
+  await db.comment.deleteMany({
+    where: { task: { column: { boardId } } },
+  });
+  await db.task.deleteMany({
+    where: { column: { boardId } },
+  });
+  await db.boardMember.deleteMany({ where: { boardId } });
+  await db.board.delete({ where: { id: boardId } });
+}
 
 async function main() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
@@ -27,34 +43,41 @@ async function main() {
     create: { name: "Bob", email: BOB_EMAIL, passwordHash },
   });
 
-  const existingBoard = await db.board.findFirst({
-    where: { title: "Sprint Board", ownerId: alice.id },
-    include: { columns: { orderBy: { position: "asc" } } },
+  await db.groupMember.deleteMany({ where: { userId: { in: [alice.id, bob.id] } } });
+
+  const acme = await db.group.upsert({
+    where: { joinCode: ACME_CODE },
+    update: { name: "Acme Corp" },
+    create: { name: "Acme Corp", joinCode: ACME_CODE },
   });
 
-  if (existingBoard) {
-    await db.notification.deleteMany({
-      where: { task: { column: { boardId: existingBoard.id } } },
-    });
-    await db.comment.deleteMany({
-      where: { task: { column: { boardId: existingBoard.id } } },
-    });
-    await db.task.deleteMany({
-      where: { column: { boardId: existingBoard.id } },
-    });
-    await db.board.delete({ where: { id: existingBoard.id } });
-  }
+  await db.group.upsert({
+    where: { joinCode: BETA_CODE },
+    update: { name: "Beta Labs" },
+    create: { name: "Beta Labs", joinCode: BETA_CODE },
+  });
 
-  const board = await db.board.create({
+  await db.groupMember.upsert({
+    where: { userId: alice.id },
+    update: { groupId: acme.id, role: "MANAGER" },
+    create: { groupId: acme.id, userId: alice.id, role: "MANAGER" },
+  });
+
+  const existingSprint = await db.board.findFirst({
+    where: { title: "Sprint Board", groupId: acme.id },
+  });
+  if (existingSprint) await deleteBoardCascade(existingSprint.id);
+
+  const existingRoadmap = await db.board.findFirst({
+    where: { title: "Product Roadmap", groupId: acme.id },
+  });
+  if (existingRoadmap) await deleteBoardCascade(existingRoadmap.id);
+
+  const sprintBoard = await db.board.create({
     data: {
       title: "Sprint Board",
-      ownerId: alice.id,
-      members: {
-        create: [
-          { userId: alice.id, role: "OWNER" },
-          { userId: bob.id, role: "MEMBER" },
-        ],
-      },
+      groupId: acme.id,
+      members: { create: { userId: alice.id } },
       columns: {
         create: [
           { title: "To Do", position: 0 },
@@ -66,7 +89,21 @@ async function main() {
     include: { columns: { orderBy: { position: "asc" } } },
   });
 
-  const [todo, inProgress, done] = board.columns;
+  await db.board.create({
+    data: {
+      title: "Product Roadmap",
+      groupId: acme.id,
+      columns: {
+        create: [
+          { title: "To Do", position: 0 },
+          { title: "In Progress", position: 1 },
+          { title: "Done", position: 2 },
+        ],
+      },
+    },
+  });
+
+  const [todo, inProgress, done] = sprintBoard.columns;
   if (!todo || !inProgress || !done) {
     throw new Error("Expected three default columns");
   }
@@ -81,7 +118,6 @@ async function main() {
         columnId: todo.id,
         position: 0,
         priority: "HIGH",
-        assigneeId: bob.id,
         deadline: futureDeadline,
       },
       {
@@ -113,16 +149,7 @@ async function main() {
         columnId: inProgress.id,
         position: 1,
         priority: "HIGH",
-        assigneeId: bob.id,
         columnEnteredAt: twoDaysAgo,
-      },
-      {
-        title: "Wire up notifications",
-        columnId: inProgress.id,
-        position: 2,
-        priority: "MEDIUM",
-        assigneeId: bob.id,
-        columnEnteredAt: oneDayAgo,
       },
       {
         title: "Deploy to Railway",
@@ -132,49 +159,15 @@ async function main() {
         assigneeId: alice.id,
         columnEnteredAt: twoDaysAgo,
       },
-      {
-        title: "Create demo seed data",
-        columnId: done.id,
-        position: 1,
-        priority: "MEDIUM",
-        assigneeId: bob.id,
-        columnEnteredAt: oneDayAgo,
-      },
-      {
-        title: "Prepare presentation",
-        columnId: todo.id,
-        position: 3,
-        priority: "CRITICAL",
-        assigneeId: alice.id,
-      },
-      {
-        title: "Review pull requests",
-        columnId: inProgress.id,
-        position: 3,
-        priority: "LOW",
-        assigneeId: alice.id,
-        columnEnteredAt: twoDaysAgo,
-      },
     ],
   });
 
-  const assignedTask = await db.task.findFirst({
-    where: { columnId: inProgress.id, assigneeId: bob.id },
-  });
-
-  if (assignedTask) {
-    await db.comment.create({
-      data: {
-        body: "Making good progress on this one!",
-        taskId: assignedTask.id,
-        authorId: alice.id,
-      },
-    });
-  }
-
   console.log("Seed complete:");
   console.log(`  Users: ${ALICE_EMAIL}, ${BOB_EMAIL} (password: ${DEMO_PASSWORD})`);
-  console.log(`  Board: "${board.title}" (${board.id})`);
+  console.log(`  Groups: Acme Corp (${ACME_CODE}), Beta Labs (${BETA_CODE})`);
+  console.log(`  Alice: MANAGER in Acme Corp with access to Sprint Board`);
+  console.log(`  Bob: not in a group — use join code to demo`);
+  console.log(`  Product Roadmap: visible to Acme members but locked until access granted`);
   console.log(`  Tasks created: ${tasks.count}`);
 }
 

@@ -12,6 +12,7 @@ import {
   decodeCursor,
   encodeCursor,
 } from "../utils/cursor.js";
+import { BoardService } from "./board.service.js";
 
 interface CreateTaskInput {
   columnId: string;
@@ -57,6 +58,8 @@ export class TaskService {
     });
     if (!column) throw new HttpError(404, "Column not found");
 
+    await BoardService.assertBoardAccess(column.boardId, actor.id);
+
     const { _max } = await db.task.aggregate({
       where: { columnId: input.columnId, archivedAt: null },
       _max: { position: true },
@@ -99,11 +102,11 @@ export class TaskService {
     });
     if (!task) throw new HttpError(404, "Task not found");
     if (task.archivedAt) throw new HttpError(400, "Cannot move archived task");
+    await BoardService.assertBoardAccess(task.column.boardId, actor.id);
     if (task.columnId === toColumnId && toPosition === undefined) return task;
 
     const toColumn = await db.column.findUnique({
       where: { id: toColumnId },
-      include: { board: { include: { owner: true } } },
     });
     if (!toColumn) throw new HttpError(404, "Column not found");
     if (toColumn.boardId !== task.column.boardId) {
@@ -164,22 +167,33 @@ export class TaskService {
     });
 
     if (landedInDone) {
-      taskEvents.emit("task.completed", {
-        task: updated,
-        owner: toColumn.board.owner,
-        actor,
-      });
+      const manager = await BoardService.getGroupManagerForBoard(
+        toColumn.boardId,
+      );
+      if (manager) {
+        taskEvents.emit("task.completed", {
+          task: updated,
+          owner: manager,
+          actor,
+        });
+      }
     }
 
     return updated;
   }
 
-  static async listByColumn(columnId: string, options: ListByColumnOptions = {}) {
+  static async listByColumn(
+    columnId: string,
+    userId: string,
+    options: ListByColumnOptions = {},
+  ) {
     const { sort, after } = options;
     const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
 
     const column = await db.column.findUnique({ where: { id: columnId } });
     if (!column) throw new HttpError(404, "Column not found");
+
+    await BoardService.assertBoardAccess(column.boardId, userId);
 
     const where: Prisma.TaskWhereInput = {
       columnId,

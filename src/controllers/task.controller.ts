@@ -44,7 +44,11 @@ export class TaskController {
     res: Response,
   ): Promise<void> {
     const query = listByColumnQuerySchema.parse(req.query);
-    const result = await TaskService.listByColumn(req.params.columnId, query);
+    const result = await TaskService.listByColumn(
+      req.params.columnId,
+      req.user!.id,
+      query,
+    );
     res.json(result);
   }
 }

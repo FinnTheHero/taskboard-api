@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
@@ -24,8 +22,8 @@ enum NotificationType {
   IN_APP
 }
 
-enum MemberRole {
-  OWNER
+enum GroupRole {
+  MANAGER
   MEMBER
 }
 
@@ -36,23 +34,54 @@ model User {
   passwordHash String
   createdAt    DateTime @default(now())
 
-  ownedBoards    Board[]
-  memberships    TeamMember[]
-  assignedTasks  Task[]
-  comments       Comment[]
-  notifications  Notification[]
-  refreshTokens  RefreshToken[]
+  groupMembership GroupMember?
+  boardMemberships BoardMember[]
+  assignedTasks    Task[]
+  comments         Comment[]
+  notifications    Notification[]
+  refreshTokens    RefreshToken[]
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  name      String
+  joinCode  String   @unique
+  createdAt DateTime @default(now())
+
+  members GroupMember[]
+  boards  Board[]
+}
+
+model GroupMember {
+  groupId String
+  userId  String    @unique
+  role    GroupRole @default(MEMBER)
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
 }
 
 model Board {
   id        String   @id @default(cuid())
   title     String
-  ownerId   String
+  groupId   String
   createdAt DateTime @default(now())
 
-  owner   User         @relation(fields: [ownerId], references: [id])
-  members TeamMember[]
+  group   Group         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  members BoardMember[]
   columns Column[]
+}
+
+model BoardMember {
+  boardId String
+  userId  String
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
 }
 
 model Column {
@@ -66,17 +95,17 @@ model Column {
 }
 
 model Task {
-  id          String    @id @default(cuid())
-  title       String
-  description String?
-  priority    Priority?
-  deadline    DateTime?
-  position    Int       @default(0)
-  columnId    String
-  assigneeId  String?
-  archivedAt        DateTime?
-  columnEnteredAt   DateTime  @default(now())
-  createdAt         DateTime  @default(now())
+  id              String    @id @default(cuid())
+  title           String
+  description     String?
+  priority        Priority?
+  deadline        DateTime?
+  position        Int       @default(0)
+  columnId        String
+  assigneeId      String?
+  archivedAt      DateTime?
+  columnEnteredAt DateTime  @default(now())
+  createdAt       DateTime  @default(now())
 
   column        Column         @relation(fields: [columnId], references: [id], onDelete: Cascade)
   assignee      User?          @relation(fields: [assigneeId], references: [id])
@@ -99,17 +128,6 @@ model Comment {
 
   task   Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
   author User @relation(fields: [authorId], references: [id])
-}
-
-model TeamMember {
-  boardId String
-  userId  String
-  role    MemberRole @default(OWNER)
-
-  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id])
-
-  @@unique([boardId, userId])
 }
 
 model Notification {
